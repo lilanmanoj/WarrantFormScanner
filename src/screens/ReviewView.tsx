@@ -22,6 +22,8 @@ export interface ReviewData {
   /** AI notes or the extraction error message. */
   message: string;
   extractionFailed: boolean;
+  /** How long capture and AI reading took, e.g. "Photo 0.8 s · Gemini 2.1 s". */
+  timing?: string;
 }
 
 interface Props {
@@ -62,7 +64,9 @@ export function ReviewView({
         keyboardShouldPersistTaps="handled">
         <Pressable onPress={() => setZoomed(true)}>
           <Image source={{ uri: imageUri }} style={styles.preview} resizeMode="contain" />
-          <Text style={styles.tapHint}>Tap image to enlarge</Text>
+          <Text style={styles.tapHint}>
+            Tap image to enlarge{data.timing ? `  ·  ${data.timing}` : ''}
+          </Text>
         </Pressable>
 
         {data.message ? (
@@ -110,6 +114,8 @@ export function ReviewView({
           placeholder="e.g. 2050:00"
           placeholderTextColor={colors.textMuted}
           editable={!saving}
+          // Built-in reader fills only the No – jump straight to typing the Total.
+          autoFocus={data.warrantNo !== '' && data.total === ''}
         />
       </ScrollView>
 

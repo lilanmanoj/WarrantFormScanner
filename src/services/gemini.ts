@@ -21,6 +21,12 @@ export interface WarrantExtraction {
   notes: string;
 }
 
+export class GeminiApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
 async function geminiFetch(
   apiKey: string,
   path: string,
@@ -43,7 +49,7 @@ async function geminiFetch(
   }
   if (!res.ok) {
     const message = body?.error?.message ?? text.slice(0, 300);
-    throw new Error(`Gemini API error (${res.status}): ${message}`);
+    throw new GeminiApiError(`Gemini API error (${res.status}): ${message}`, res.status);
   }
   return body;
 }
@@ -121,7 +127,8 @@ const RESPONSE_SCHEMA = {
 
 /** Normalises the "No" to digits only. */
 export function normalizeWarrantNo(value: string): string {
-  return (value ?? '').replace(/\D/g, '');
+  // Drop a "D/1" (or "D / I") prefix if the model included it, then keep digits.
+  return (value ?? '').replace(/^\s*D\s*\/\s*[1Il]\s*/i, '').replace(/\D/g, '');
 }
 
 /** Normalises the total to "rupees:cents", e.g. "2050" -> "2050:00", "6400.5" -> "6400:50". */
@@ -133,7 +140,7 @@ export function normalizeTotal(value: string): string {
   }
   const match = cleaned.match(/(\d+)(?:[:./-](\d{0,2}|-))?/);
   if (!match) {
-    return cleaned;
+    return ''; // No digits – not an amount.
   }
   const rupees = match[1];
   let cents = match[2] && match[2] !== '-' ? match[2] : '00';
@@ -141,31 +148,78 @@ export function normalizeTotal(value: string): string {
   return `${rupees}:${cents}`;
 }
 
+type ThinkingConfig = { thinkingBudget: number } | { thinkingLevel: string };
+
+/**
+ * "Thinking" adds several seconds per request and isn't needed to read two
+ * fields, so ask for the least thinking each model family allows. Options are
+ * tried in order; `undefined` means "send no thinking config" (model default).
+ */
+export function thinkingOptionsFor(model: string): (ThinkingConfig | undefined)[] {
+  const name = model.toLowerCase();
+  const major = Number(name.match(/gemini-(\d+)/)?.[1] ?? 0);
+  if (major >= 3) {
+    return name.includes('pro')
+      ? [{ thinkingLevel: 'low' }, undefined]
+      : [{ thinkingLevel: 'minimal' }, { thinkingLevel: 'low' }, undefined];
+  }
+  if (/gemini-2\.5/.test(name)) {
+    // 2.5 Pro can't disable thinking; 128 tokens is its minimum.
+    return name.includes('pro')
+      ? [{ thinkingBudget: 128 }, undefined]
+      : [{ thinkingBudget: 0 }, undefined];
+  }
+  return [undefined]; // Older models don't think.
+}
+
+/** Remembers which thinking option each model accepted, to skip failed attempts. */
+const acceptedThinking = new Map<string, ThinkingConfig | undefined>();
+
 export async function extractWarrantFields(
   apiKey: string,
   model: string,
   jpegBase64: string,
 ): Promise<WarrantExtraction> {
   const modelPath = model.startsWith('models/') ? model : `models/${model}`;
-  const body = await geminiFetch(apiKey, `${modelPath}:generateContent`, {
-    method: 'POST',
-    body: JSON.stringify({
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            { inline_data: { mime_type: 'image/jpeg', data: jpegBase64 } },
-            { text: EXTRACTION_PROMPT },
-          ],
+  const request = (thinkingConfig: ThinkingConfig | undefined) =>
+    geminiFetch(apiKey, `${modelPath}:generateContent`, {
+      method: 'POST',
+      body: JSON.stringify({
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { inline_data: { mime_type: 'image/jpeg', data: jpegBase64 } },
+              { text: EXTRACTION_PROMPT },
+            ],
+          },
+        ],
+        generationConfig: {
+          temperature: 0,
+          responseMimeType: 'application/json',
+          responseSchema: RESPONSE_SCHEMA,
+          ...(thinkingConfig ? { thinkingConfig } : {}),
         },
-      ],
-      generationConfig: {
-        temperature: 0,
-        responseMimeType: 'application/json',
-        responseSchema: RESPONSE_SCHEMA,
-      },
-    }),
-  });
+      }),
+    });
+
+  const options = acceptedThinking.has(modelPath)
+    ? [acceptedThinking.get(modelPath)]
+    : thinkingOptionsFor(modelPath);
+  let body: any;
+  for (let i = 0; i < options.length; i++) {
+    try {
+      body = await request(options[i]);
+      acceptedThinking.set(modelPath, options[i]);
+      break;
+    } catch (e) {
+      // A 400 here means this model rejected the thinking setting – try the next one.
+      const isLast = i === options.length - 1;
+      if (isLast || !(e instanceof GeminiApiError) || e.status !== 400) {
+        throw e;
+      }
+    }
+  }
 
   const candidate = body?.candidates?.[0];
   const text: string = (candidate?.content?.parts ?? [])

@@ -1,8 +1,9 @@
 # Warrant Form Scanner
 
 A React Native app that scans Sri Lanka Government Railway **Passenger Warrant** forms
-with the phone camera. It reads two fields with Google Gemini, lets you review and fix
-them, and adds them as a new row in a Google Sheet.
+with the phone camera. It reads two fields, either on the phone (built-in reader) or with
+Google Gemini, lets you review and fix them, and adds them as a new row in a Google Sheet.
+Warrants can also be typed in by hand with **Manual Enter**.
 
 | Field     | Where on the form                                        | Example   |
 |-----------|----------------------------------------------------------|-----------|
@@ -15,12 +16,31 @@ them, and adds them as a new row in a Google Sheet.
 2. **Home screen**
    - **Category** dropdown: the category written to every row. Only *active* categories appear, in your chosen order.
    - **Google Sheet URL**: paste the sheet link. Rows go to the tab in the URL (`#gid=…`), or to the first tab.
-   - **Settings** and **Start scan** buttons.
-3. **Scan.** Fit the warrant in the frame and press the shutter. The photo goes to Gemini, which returns *No* and *Total*.
+   - **Settings**, **Start scan** and **Manual Enter** buttons.
+3. **Scan.** Fit the warrant in the frame and press the shutter. The selected reader (see below) reads the photo.
 4. **Review.** The photo, the selected category, and editable *No* / *Total* fields are shown.
    - **Accept** appends a row to the sheet, then returns to the camera for the next warrant.
    - **Reject** discards the photo and returns to the camera.
 5. **End scan.** The floating button at the top of the camera view returns to the home screen.
+6. **Manual Enter.** A form with *Category*, *No* and *Total*.
+   - **Next** adds the row to the sheet and clears No / Total for the next warrant.
+   - The category starts as the home-screen selection. Changing it here also changes it on the home screen.
+   - **Done Edit** (top right) returns to the home screen. It asks first if there is unsaved input.
+
+### Scan readers (Settings → Scan reader)
+
+| | Built-in (on-device) | Gemini AI |
+|---|---|---|
+| **No** (printed) | ✅ read on the phone, typically under a second | ✅ |
+| **Total** (handwritten) | ❌ you type it; the cursor starts in the Total field | ✅ |
+| Internet / API key | Not needed | Needed |
+| Speed | Fast | A few seconds per scan |
+
+The built-in reader uses Google ML Kit text recognition, with the model bundled in the app,
+on a zoomed crop of the form's top-right corner. It read the No correctly on all 8 sample
+warrants. ML Kit's on-device model only reads printed text: on the samples it misread or
+missed the handwritten Totals (for example `3300` read as `930`). So the built-in reader
+leaves Total empty rather than pre-filling a wrong amount. The built-in reader is Android-only.
 
 Settings, categories, the sheet URL and the selected category are kept in AsyncStorage, so they survive app restarts.
 
@@ -35,7 +55,7 @@ instead of being turned into a time. *No* is stored as a number.
 
 ## One-time setup
 
-### 1. Gemini API key
+### 1. Gemini API key (only for the Gemini AI reader)
 
 1. Go to <https://aistudio.google.com/apikey> and create an API key.
    This is the same key the Gemini CLI reads from `GEMINI_API_KEY`.
@@ -111,5 +131,25 @@ src/screens/CategoriesScreen.tsx  add / reorder / activate categories
 src/components/SortableList.tsx   drag-to-reorder list (PanResponder, no native deps)
 src/screens/ScanScreen.tsx   camera, capture, Gemini call, save, End scan
 src/screens/ReviewView.tsx   editable review with Accept / Reject
-scripts/test-extraction.mts  run extraction against a folder of images
+scripts/test-extraction.mts  run Gemini extraction against a folder of images
+src/screens/ManualEntryScreen.tsx  type-in form (Next / Done Edit)
+src/services/ocr/            built-in reader: native call + "No" parser
+specs/NativeWarrantOcr.ts    TurboModule spec for the native OCR module
+android/app/src/main/java/com/warrantformscanner/ocr/   ML Kit OCR (Kotlin)
+android/app/src/debug/…/OcrDebugActivity.kt  debug-only OCR harness (see below)
 ```
+
+### Tuning the built-in reader
+
+`OcrDebugActivity` (debug builds only) runs the native OCR over sample photos and saves the
+raw ML Kit output. `__tests__/fixtures/mlkit-top-right.json` holds the top-right region of that
+output for the 8 sample warrants, and `__tests__/ocr.test.ts` checks the No parser against it.
+
+```sh
+adb push photo.jpeg /data/local/tmp/ws/
+adb shell run-as com.warrantformscanner sh -c 'mkdir -p files/samples && cp /data/local/tmp/ws/*.jpeg files/samples/'
+adb shell am start -n com.warrantformscanner/.OcrDebugActivity
+adb exec-out run-as com.warrantformscanner cat files/ocr/photo.json
+```
+
+If Jest fails with a Watchman "inotify" error, run `npx jest --no-watchman`.

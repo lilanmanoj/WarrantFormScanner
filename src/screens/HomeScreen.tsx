@@ -16,7 +16,8 @@ import {
   parseSpreadsheetUrl,
   resolveSheetTitle,
 } from '../services/sheets';
-import type { AppSettings } from '../storage';
+import { isDeviceOcrAvailable } from '../services/ocr';
+import { AppSettings, PROCESSOR_LABELS } from '../storage';
 import { colors, spacing } from '../theme';
 
 export interface SheetTarget {
@@ -34,6 +35,7 @@ interface Props {
   onSelectedOptionChange: (value: string) => void;
   onOpenSettings: () => void;
   onStartScan: (target: SheetTarget) => void;
+  onManualEntry: (target: SheetTarget) => void;
 }
 
 export function HomeScreen({
@@ -45,13 +47,17 @@ export function HomeScreen({
   onSelectedOptionChange,
   onOpenSettings,
   onStartScan,
+  onManualEntry,
 }: Props) {
-  const [starting, setStarting] = useState(false);
+  const [starting, setStarting] = useState<'scan' | 'manual' | null>(null);
 
+  const useGemini = settings.processor === 'gemini';
   const aiReady = Boolean(settings.geminiApiKey && settings.geminiModel);
+  const readerReady = useGemini ? aiReady : isDeviceOcrAvailable();
   const sheetsReady = Boolean(settings.serviceAccountJson);
 
-  const handleStartScan = async () => {
+  /** Validates the inputs, checks the sheet is reachable, then opens the given mode. */
+  const start = async (mode: 'scan' | 'manual') => {
     const problems: string[] = [];
     if (!selectedOption) {
       problems.push(
@@ -64,27 +70,31 @@ export function HomeScreen({
     if (!ref) {
       problems.push('Paste a valid Google Sheet URL.');
     }
-    if (!aiReady) {
-      problems.push('Set up the Gemini API key in Settings.');
+    if (mode === 'scan' && useGemini && !aiReady) {
+      problems.push('Set up the Gemini API key in Settings (or choose the built-in reader).');
+    }
+    if (mode === 'scan' && !useGemini && !isDeviceOcrAvailable()) {
+      problems.push('The built-in reader is not available on this device. Choose Gemini AI in Settings.');
     }
     if (!sheetsReady) {
       problems.push('Add the Google service account key in Settings.');
     }
     if (problems.length > 0 || !ref) {
-      Alert.alert('Before scanning', problems.join('\n'));
+      Alert.alert(mode === 'scan' ? 'Before scanning' : 'Before entering', problems.join('\n'));
       return;
     }
 
-    setStarting(true);
+    setStarting(mode);
     try {
-      // Verifies the sheet is reachable before the user starts scanning.
+      // Verifies the sheet is reachable before the user starts.
       const sa = parseServiceAccount(settings.serviceAccountJson);
       const sheetTitle = await resolveSheetTitle(sa, ref);
-      onStartScan({ spreadsheetId: ref.spreadsheetId, sheetTitle });
+      const target = { spreadsheetId: ref.spreadsheetId, sheetTitle };
+      (mode === 'scan' ? onStartScan : onManualEntry)(target);
     } catch (e: any) {
       Alert.alert('Cannot access Google Sheet', e?.message ?? String(e));
     } finally {
-      setStarting(false);
+      setStarting(null);
     }
   };
 
@@ -106,7 +116,18 @@ export function HomeScreen({
         </View>
 
         <View style={styles.statusRow}>
-          <StatusPill ok={aiReady} label={aiReady ? 'Gemini ready' : 'Gemini not set'} />
+          <StatusPill
+            ok={readerReady}
+            label={
+              useGemini
+                ? aiReady
+                  ? 'Reader: Gemini AI'
+                  : 'Gemini not set'
+                : readerReady
+                ? `Reader: ${PROCESSOR_LABELS.device}`
+                : 'Built-in reader unavailable'
+            }
+          />
           <StatusPill ok={sheetsReady} label={sheetsReady ? 'Sheets key set' : 'Sheets not set'} />
         </View>
 
@@ -137,9 +158,18 @@ export function HomeScreen({
 
         <Button
           title="Start scan"
-          onPress={handleStartScan}
-          loading={starting}
+          onPress={() => start('scan')}
+          loading={starting === 'scan'}
+          disabled={starting !== null}
           style={styles.startButton}
+        />
+        <Button
+          title="Manual Enter"
+          variant="secondary"
+          onPress={() => start('manual')}
+          loading={starting === 'manual'}
+          disabled={starting !== null}
+          style={styles.manualButton}
         />
       </ScrollView>
     </KeyboardAvoidingView>
@@ -216,5 +246,9 @@ const styles = StyleSheet.create({
   startButton: {
     marginTop: spacing.lg,
     minHeight: 60,
+  },
+  manualButton: {
+    marginTop: spacing.sm,
+    minHeight: 54,
   },
 });

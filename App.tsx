@@ -13,6 +13,7 @@ import {
 import { useCameraPermission } from 'react-native-vision-camera';
 import { CategoriesScreen } from './src/screens/CategoriesScreen';
 import { HomeScreen, SheetTarget } from './src/screens/HomeScreen';
+import { ManualEntryScreen } from './src/screens/ManualEntryScreen';
 import { PermissionScreen } from './src/screens/PermissionScreen';
 import { ScanScreen } from './src/screens/ScanScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
@@ -33,7 +34,8 @@ type Route =
   | { name: 'home' }
   | { name: 'settings' }
   | { name: 'categories' }
-  | { name: 'scan'; target: SheetTarget };
+  | { name: 'scan'; target: SheetTarget }
+  | { name: 'manual'; target: SheetTarget };
 
 function AppContent() {
   const { hasPermission, canRequestPermission, requestPermission } =
@@ -126,6 +128,22 @@ function AppContent() {
     );
   }
 
+  if (route.name === 'manual') {
+    return (
+      <SafeAreaView style={styles.safe}>
+        <StatusBar barStyle="dark-content" />
+        <ManualEntryScreen
+          settings={state.settings}
+          target={route.target}
+          categoryOptions={categoryOptions}
+          category={selectedCategory}
+          onCategoryChange={handleSelectedOptionChange}
+          onDone={() => setRoute({ name: 'home' })}
+        />
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.safe}>
       <StatusBar barStyle="dark-content" />
@@ -160,6 +178,7 @@ function AppContent() {
           onSelectedOptionChange={handleSelectedOptionChange}
           onOpenSettings={() => setRoute({ name: 'settings' })}
           onStartScan={target => setRoute({ name: 'scan', target })}
+          onManualEntry={target => setRoute({ name: 'manual', target })}
         />
       )}
     </SafeAreaView>

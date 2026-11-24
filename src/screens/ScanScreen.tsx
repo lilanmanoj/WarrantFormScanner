@@ -17,7 +17,9 @@ import {
   usePhotoOutput,
 } from 'react-native-vision-camera';
 import type { Image as NitroImage } from 'react-native-nitro-image';
-import { extractWarrantFields } from '../services/gemini';
+import { extractWarrantFields, WarrantExtraction } from '../services/gemini';
+import { readWarrantOnDevice } from '../services/ocr';
+import { buildWarrantRow } from '../services/rows';
 import { appendRow, parseServiceAccount } from '../services/sheets';
 import type { AppSettings } from '../storage';
 import { colors, spacing } from '../theme';
@@ -34,27 +36,48 @@ interface Props {
 
 type Phase = 'camera' | 'processing' | 'review';
 
-/** Longest side of the image sent to Gemini – plenty for reading the form. */
-const MAX_UPLOAD_SIDE = 2000;
+/**
+ * Longest side of the image sent to Gemini. ~1600px keeps handwritten digits
+ * ~30px tall on a full warrant – plenty to read – while keeping the upload small.
+ */
+const MAX_UPLOAD_SIDE = 1600;
+const JPEG_QUALITY = 80;
+/** The on-device reader benefits from every pixel (no upload), so keep the full capture. */
+const MAX_DEVICE_SIDE = 2400;
+const DEVICE_JPEG_QUALITY = 92;
 
-function timestamp(): string {
-  const d = new Date();
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(
-    d.getMinutes(),
-  )}:${p(d.getSeconds())}`;
+/** Reads a file as base64 using the native FileReader (much faster than JS). */
+async function readFileAsBase64(path: string): Promise<string> {
+  const blob = await (await fetch(`file://${path}`)).blob();
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error ?? new Error('FileReader failed'));
+    reader.readAsDataURL(blob);
+  });
+  const comma = dataUrl.indexOf(',');
+  if (comma < 0) {
+    throw new Error('Unexpected data URL');
+  }
+  return dataUrl.slice(comma + 1);
 }
+
+const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
 
 export function ScanScreen({ settings, selectedOption, target, onEnd }: Props) {
   const insets = useSafeAreaInsets();
   const device = useCameraDevice('back');
   const photoOutput = usePhotoOutput({
-    targetResolution: CommonResolutions.QHD_4_3,
+    // Capture close to the upload size so there is little to decode/resize.
+    targetResolution: CommonResolutions.FHD_4_3,
     containerFormat: 'jpeg',
     quality: 0.9,
+    // Skip slow multi-frame processing where the camera supports it.
+    qualityPrioritization: device?.supportsSpeedQualityPrioritization ? 'speed' : 'balanced',
   });
 
   const [phase, setPhase] = useState<Phase>('camera');
+  const [stage, setStage] = useState('');
   const [review, setReview] = useState<ReviewData | null>(null);
   const [saving, setSaving] = useState(false);
   const [torch, setTorch] = useState(false);
@@ -116,10 +139,14 @@ export function ScanScreen({ settings, selectedOption, target, onEnd }: Props) {
       return;
     }
     setPhase('processing');
+    setStage('Capturing…');
     const myRequest = ++requestId.current;
 
     let imagePath = '';
+    let timing = '';
     const images: NitroImage[] = [];
+    const t0 = Date.now();
+    const useDevice = settings.processor === 'device';
     try {
       // 1. Take the photo and normalise orientation.
       const photo = await photoOutput.capturePhoto({ flashMode: 'off' }, {});
@@ -131,8 +158,9 @@ export function ScanScreen({ settings, selectedOption, target, onEnd }: Props) {
       }
       images.push(image);
 
-      // 2. Downscale for a faster upload.
-      const scale = Math.min(1, MAX_UPLOAD_SIDE / Math.max(image.width, image.height));
+      // 2. Downscale (mainly for a faster Gemini upload).
+      const maxSide = useDevice ? MAX_DEVICE_SIDE : MAX_UPLOAD_SIDE;
+      const scale = Math.min(1, maxSide / Math.max(image.width, image.height));
       if (scale < 1) {
         image = await image.resizeAsync(
           Math.round(image.width * scale),
@@ -141,16 +169,36 @@ export function ScanScreen({ settings, selectedOption, target, onEnd }: Props) {
         images.push(image);
       }
 
-      imagePath = await image.saveToTemporaryFileAsync('jpg', 85);
-      const encoded = await image.toEncodedImageDataAsync('jpg', 85);
-      const base64 = arrayBufferToBase64(encoded.buffer);
-
-      // 3. Ask Gemini to read the two fields.
-      const result = await extractWarrantFields(
-        settings.geminiApiKey,
-        settings.geminiModel,
-        base64,
+      // 3. Encode once: the file is used for the preview and for reading.
+      imagePath = await image.saveToTemporaryFileAsync(
+        'jpg',
+        useDevice ? DEVICE_JPEG_QUALITY : JPEG_QUALITY,
       );
+      const t1 = Date.now();
+      timing = `Photo ${seconds(t1 - t0)}`;
+
+      // 4. Read the two fields.
+      let result: WarrantExtraction;
+      if (useDevice) {
+        if (myRequest === requestId.current) {
+          setStage('Reading…');
+        }
+        result = await readWarrantOnDevice(imagePath);
+        timing += ` · Built-in reader ${seconds(Date.now() - t1)}`;
+      } else {
+        let base64: string;
+        try {
+          base64 = await readFileAsBase64(imagePath);
+        } catch {
+          const encoded = await image.toEncodedImageDataAsync('jpg', JPEG_QUALITY);
+          base64 = arrayBufferToBase64(encoded.buffer);
+        }
+        if (myRequest === requestId.current) {
+          setStage('Reading with Gemini…');
+        }
+        result = await extractWarrantFields(settings.geminiApiKey, settings.geminiModel, base64);
+        timing += ` · Gemini ${seconds(Date.now() - t1)}`;
+      }
       if (myRequest !== requestId.current) {
         return; // cancelled
       }
@@ -160,6 +208,7 @@ export function ScanScreen({ settings, selectedOption, target, onEnd }: Props) {
         total: result.total,
         message: result.notes,
         extractionFailed: false,
+        timing,
       });
       setPhase('review');
     } catch (e: any) {
@@ -179,6 +228,7 @@ export function ScanScreen({ settings, selectedOption, target, onEnd }: Props) {
         total: '',
         message: e?.message ?? String(e),
         extractionFailed: true,
+        timing,
       });
       setPhase('review');
     } finally {
@@ -190,14 +240,12 @@ export function ScanScreen({ settings, selectedOption, target, onEnd }: Props) {
     setSaving(true);
     try {
       const sa = parseServiceAccount(settings.serviceAccountJson);
-      // Keep "No" numeric in the sheet unless it has a leading zero.
-      const noCell: string | number = /^[1-9]\d*$/.test(warrantNo) ? Number(warrantNo) : warrantNo;
-      await appendRow(sa, target.spreadsheetId, target.sheetTitle, [
-        selectedOption,
-        noCell,
-        total,
-        timestamp(),
-      ]);
+      await appendRow(
+        sa,
+        target.spreadsheetId,
+        target.sheetTitle,
+        buildWarrantRow(selectedOption, warrantNo, total),
+      );
       savedNumbers.add(warrantNo);
       setSavedCount(c => c + 1);
       setToast(`Saved No ${warrantNo} to "${target.sheetTitle}"`);
@@ -289,7 +337,7 @@ export function ScanScreen({ settings, selectedOption, target, onEnd }: Props) {
       {phase === 'processing' ? (
         <View style={styles.processing}>
           <ActivityIndicator size="large" color="#fff" />
-          <Text style={styles.processingText}>Reading warrant…</Text>
+          <Text style={styles.processingText}>{stage}</Text>
           <Pressable onPress={backToCamera} style={styles.cancelButton}>
             <Text style={styles.endText}>Cancel</Text>
           </Pressable>

@@ -24,6 +24,8 @@ describe('normalizeWarrantNo', () => {
   it('keeps digits only', () => {
     expect(normalizeWarrantNo('282 681')).toBe('282681');
     expect(normalizeWarrantNo('559 952')).toBe('559952');
+    expect(normalizeWarrantNo('D/1 282681')).toBe('282681');
+    expect(normalizeWarrantNo('D / I 559952')).toBe('559952');
   });
 });
 

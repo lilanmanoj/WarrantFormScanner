@@ -18,7 +18,7 @@ import {
   pickDefaultModel,
 } from '../services/gemini';
 import { getAccessToken, parseServiceAccount } from '../services/sheets';
-import type { AppSettings } from '../storage';
+import { AppSettings, Processor, PROCESSOR_LABELS } from '../storage';
 import { colors, spacing } from '../theme';
 
 interface Props {
@@ -41,6 +41,7 @@ export function SettingsScreen({
   onSave,
   onBack,
 }: Props) {
+  const [processor, setProcessor] = useState<Processor>(settings.processor);
   const [apiKey, setApiKey] = useState(settings.geminiApiKey);
   const [showKey, setShowKey] = useState(false);
   const [model, setModel] = useState(settings.geminiModel);
@@ -94,7 +95,10 @@ export function SettingsScreen({
         setGeminiStatus({ ok: false, message: e?.message ?? String(e) });
       }
     } else {
-      setGeminiStatus({ ok: false, message: 'Enter a Gemini API key.' });
+      // Only required when Gemini is the selected reader.
+      setGeminiStatus(
+        processor === 'gemini' ? { ok: false, message: 'Enter a Gemini API key.' } : null,
+      );
     }
 
     // 2. Verify the Google service account can sign in.
@@ -117,6 +121,7 @@ export function SettingsScreen({
     // 3. Persist everything (even if a connection check failed, so nothing typed is lost).
     try {
       await onSave({
+        processor,
         geminiApiKey: trimmedKey,
         geminiModel: chosenModel,
         serviceAccountJson: trimmedJson,
@@ -143,8 +148,26 @@ export function SettingsScreen({
       <ScrollView
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled">
+        {/* ---------- Reader ---------- */}
+        <Text style={styles.section}>Scan reader</Text>
+        <Text style={styles.hint}>
+          Built-in: reads the printed No on the phone in about a second – free and
+          offline. It can't read handwriting, so you type the Total on the review
+          screen (the cursor is already there).{'\n'}Gemini AI: reads both No and the
+          handwritten Total, but takes a few seconds per scan and needs internet and an
+          API key.
+        </Text>
+        <Dropdown
+          options={Object.keys(PROCESSOR_LABELS)}
+          value={processor}
+          onChange={v => setProcessor(v as Processor)}
+          getLabel={v => PROCESSOR_LABELS[v as Processor] ?? v}
+        />
+
         {/* ---------- Gemini ---------- */}
-        <Text style={styles.section}>Google Gemini</Text>
+        <Text style={styles.section}>
+          Google Gemini{processor === 'gemini' ? '' : ' (optional)'}
+        </Text>
         <Text style={styles.hint}>
           Create an API key at aistudio.google.com/apikey (the same key the Gemini
           CLI uses as GEMINI_API_KEY).

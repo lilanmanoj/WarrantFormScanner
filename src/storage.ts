@@ -1,10 +1,20 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+/** How scanned photos are read. */
+export type Processor = 'device' | 'gemini';
+
+export const PROCESSOR_LABELS: Record<Processor, string> = {
+  device: 'Built-in (on-device)',
+  gemini: 'Gemini AI',
+};
+
 /**
  * Everything the app persists between restarts.
  * Stored in AsyncStorage (app-private storage on the device).
  */
 export interface AppSettings {
+  /** Which reader extracts No / Total from a photo. */
+  processor: Processor;
   /** Gemini API key (from Google AI Studio). */
   geminiApiKey: string;
   /** Gemini model id, e.g. "models/gemini-2.5-flash". */
@@ -31,6 +41,7 @@ export interface AppState {
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
+  processor: 'device',
   geminiApiKey: '',
   geminiModel: '',
   serviceAccountJson: '',
