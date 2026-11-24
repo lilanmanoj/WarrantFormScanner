@@ -1,97 +1,115 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# Warrant Form Scanner
 
-# Getting Started
+A React Native app that scans Sri Lanka Government Railway **Passenger Warrant** forms
+with the phone camera. It reads two fields with Google Gemini, lets you review and fix
+them, and adds them as a new row in a Google Sheet.
 
-> **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
+| Field     | Where on the form                                        | Example   |
+|-----------|----------------------------------------------------------|-----------|
+| **No**    | Printed, top-right, after `D/1`                          | `282681`  |
+| **Total** | Handwritten, bottom-right, "Total" row in the Amount column (Rs : c) | `2050:00` |
 
-## Step 1: Start Metro
+## How it works
 
-First, you will need to run **Metro**, the JavaScript build tool for React Native.
+1. **Camera permission.** The app asks for it at launch and only continues once it is granted.
+2. **Home screen**
+   - **Category** dropdown: the category written to every row. Only *active* categories appear, in your chosen order.
+   - **Google Sheet URL**: paste the sheet link. Rows go to the tab in the URL (`#gid=…`), or to the first tab.
+   - **Settings** and **Start scan** buttons.
+3. **Scan.** Fit the warrant in the frame and press the shutter. The photo goes to Gemini, which returns *No* and *Total*.
+4. **Review.** The photo, the selected category, and editable *No* / *Total* fields are shown.
+   - **Accept** appends a row to the sheet, then returns to the camera for the next warrant.
+   - **Reject** discards the photo and returns to the camera.
+5. **End scan.** The floating button at the top of the camera view returns to the home screen.
 
-To start the Metro dev server, run the following command from the root of your React Native project:
+Settings, categories, the sheet URL and the selected category are kept in AsyncStorage, so they survive app restarts.
+
+### Row format
+
+| A (Category)    | B (No)   | C (Total) | D (Scanned at)        |
+|-----------------|----------|-----------|-----------------------|
+| category        | 282681   | 2050:00   | 2026-11-24 15:10:02   |
+
+Values are written with `valueInputOption=RAW`, so `2050:00` is stored exactly as typed
+instead of being turned into a time. *No* is stored as a number.
+
+## One-time setup
+
+### 1. Gemini API key
+
+1. Go to <https://aistudio.google.com/apikey> and create an API key.
+   This is the same key the Gemini CLI reads from `GEMINI_API_KEY`.
+2. In the app, open **Settings**, paste the key, and press **Save**. The app connects,
+   lists the models your key can use, and picks the newest stable *Flash* model.
+   You can choose a different model in the dropdown and press **Save** again.
+
+> The Gemini CLI is a desktop terminal tool and cannot run inside a phone app, so the
+> app calls the Gemini API directly with your API key.
+
+### 2. Google Sheets access (service account)
+
+1. In [Google Cloud Console](https://console.cloud.google.com/), create a project (or use an existing one).
+2. Enable the **Google Sheets API** (APIs & Services → Library).
+3. Go to IAM & Admin → Service Accounts → **Create service account** (no roles needed).
+4. Open the service account → **Keys** → Add key → **JSON**. A `.json` file downloads.
+5. Copy the whole content of that file into **Settings → Service account key (JSON)** and press **Save**.
+   The app signs in and shows the service account email (`…@….iam.gserviceaccount.com`).
+6. Open your Google Sheet → **Share**, and add that email as an **Editor**.
+
+> The key is stored on the device in the app's private storage. Use a service account
+> made only for this app, with access only to the sheets it needs.
+
+### 3. Categories
+
+Open **Settings → Category Data**:
+
+- Type a name in the top field and tap **＋** to add it. It is added as *Active* at the end of the list.
+- Drag a row by its **☰** handle to reorder. The home dropdown uses this order.
+- Set **Active / Inactive** on each row. Inactive categories are hidden from the home dropdown but kept.
+- Tap **✕** to delete a category.
+
+Changes are saved immediately; there is no Save button on this screen.
+
+## Development
+
+Requirements: Node ≥ 22.18, JDK 17, Android SDK (see the
+[React Native environment setup](https://reactnative.dev/docs/set-up-your-environment)).
 
 ```sh
-# Using npm
-npm start
-
-# OR using Yarn
-yarn start
+npm install
+npm start            # Metro bundler
+npm run android      # build & run on a connected device / emulator
 ```
 
-## Step 2: Build and run your app
+iOS: `bundle install && cd ios && bundle exec pod install && cd .. && npm run ios`.
 
-With Metro running, open a new terminal window/pane from the root of your React Native project, and use one of the following commands to build and run your Android or iOS app:
+Use a real device for camera testing. Emulators only provide a simulated camera.
 
-### Android
+### Tests
 
 ```sh
-# Using npm
-npm run android
-
-# OR using Yarn
-yarn android
+npm test                     # unit tests (parsing, normalisation, JWT signing)
+npx tsc --noEmit && npm run lint
 ```
 
-### iOS
-
-For iOS, remember to install CocoaPods dependencies (this only needs to be run on first clone or after updating native deps).
-
-The first time you create a new project, run the Ruby bundler to install CocoaPods itself:
+To try the Gemini extraction prompt on sample photos without building the app:
 
 ```sh
-bundle install
+GEMINI_API_KEY=your-key npm run test:extraction -- ~/Documents/warrant_samples [models/<model-id>]
 ```
 
-Then, and every time you update your native dependencies, run:
+## Project layout
 
-```sh
-bundle exec pod install
 ```
-
-For more information, please visit [CocoaPods Getting Started guide](https://guides.cocoapods.org/using/getting-started.html).
-
-```sh
-# Using npm
-npm run ios
-
-# OR using Yarn
-yarn ios
+App.tsx                      permission gate, persistence, screen routing
+src/storage.ts               AsyncStorage persistence
+src/services/gemini.ts       Gemini API: list models, extract No/Total (prompt lives here)
+src/services/sheets.ts       service-account JWT auth + Sheets append
+src/screens/HomeScreen.tsx   dropdown, sheet URL, Settings / Start scan
+src/screens/SettingsScreen.tsx
+src/screens/CategoriesScreen.tsx  add / reorder / activate categories
+src/components/SortableList.tsx   drag-to-reorder list (PanResponder, no native deps)
+src/screens/ScanScreen.tsx   camera, capture, Gemini call, save, End scan
+src/screens/ReviewView.tsx   editable review with Accept / Reject
+scripts/test-extraction.mts  run extraction against a folder of images
 ```
-
-If everything is set up correctly, you should see your new app running in the Android Emulator, iOS Simulator, or your connected device.
-
-This is one way to run your app — you can also build it directly from Android Studio or Xcode.
-
-## Step 3: Modify your app
-
-Now that you have successfully run the app, let's make changes!
-
-Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes — this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
-
-When you want to forcefully reload, for example to reset the state of your app, you can perform a full reload:
-
-- **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Dev Menu**, accessed via <kbd>Ctrl</kbd> + <kbd>M</kbd> (Windows/Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (macOS).
-- **iOS**: Press <kbd>R</kbd> in iOS Simulator.
-
-## Congratulations! :tada:
-
-You've successfully run and modified your React Native App. :partying_face:
-
-### Now what?
-
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [docs](https://reactnative.dev/docs/getting-started).
-
-# Troubleshooting
-
-If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
-
-# Learn More
-
-To learn more about React Native, take a look at the following resources:
-
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
